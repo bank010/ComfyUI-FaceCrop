@@ -1,0 +1,23 @@
+[project]
+name = "comfyui-facecrop"
+version = "1.0.0"
+description = "基于 YOLOv8 的人脸检测与 1:1 头像裁剪 ComfyUI 自定义节点，支持真人/动漫/自动模式。"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ultralytics>=8.3.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.26.0",
+    "httpx>=0.27.0",
+    "huggingface_hub>=0.20.0",
+    "onnxruntime>=1.17.0",
+]
+
+[project.urls]
+Repository = "https://github.com/bank010/ComfyUI-FaceCrop"
+
+[tool.comfy]
+PublisherId = "bank010"
+DisplayName = "ComfyUI-FaceCrop"
+Icon = ""
