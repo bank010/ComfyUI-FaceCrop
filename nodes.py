@@ -76,10 +76,6 @@ class FaceDetectCrop:
                     "FLOAT",
                     {"default": 2.0, "min": 1.0, "max": 5.0, "step": 0.1},
                 ),
-                "output_size": (
-                    "INT",
-                    {"default": 0, "min": 0, "max": 4096, "step": 8},
-                ),
             }
         }
 
@@ -88,8 +84,8 @@ class FaceDetectCrop:
     FUNCTION = "run"
     CATEGORY = "FaceCrop"
 
-    def run(self, image, mode, expand, output_size):
-        size = output_size if output_size > 0 else None
+    def run(self, image, mode, expand):
+        size = None
         cropped_list: list[Image.Image] = []
         mask_list: list[torch.Tensor] = []
         confs: list[float] = []
@@ -156,10 +152,6 @@ class FaceDetectCropFromURL:
                     "FLOAT",
                     {"default": 2.0, "min": 1.0, "max": 5.0, "step": 0.1},
                 ),
-                "output_size": (
-                    "INT",
-                    {"default": 0, "min": 0, "max": 4096, "step": 8},
-                ),
             },
             "optional": {
                 "proxy_url": ("STRING", {"default": "", "multiline": False}),
@@ -192,8 +184,7 @@ class FaceDetectCropFromURL:
             resp.raise_for_status()
         return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-    def run(self, url, mode, expand, output_size, proxy_url=""):
-        size = output_size if output_size > 0 else None
+    def run(self, url, mode, expand, proxy_url=""):
         try:
             pil = self._download(url, proxy_url)
         except Exception as e:
@@ -201,12 +192,11 @@ class FaceDetectCropFromURL:
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), 0.0, False)
 
         cropped, _box, conf = detect_and_crop_pil(
-            pil, conf=DEFAULT_CONFIDENCE, expand=expand, mode=mode, size=size
+            pil, conf=DEFAULT_CONFIDENCE, expand=expand, mode=mode, size=None
         )
         if cropped is None:
             log.info("未检测到人脸: %s", url)
-            fallback = pil if size is None else pil.resize((size, size), Image.LANCZOS)
-            return (pil_to_tensor(fallback), 0.0, False)
+            return (pil_to_tensor(pil), 0.0, False)
 
         return (pil_to_tensor(cropped), conf, True)
 
