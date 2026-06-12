@@ -99,28 +99,33 @@ def crop_square(
         1.0 = 紧贴检测框
         1.2 = 略微扩充（紧凑人脸）
         1.8~2.0 = 包含完整头部 + 部分肩颈
+
+    当人脸贴近图像边缘、expand 较大时，期望的正方形可能超出图像范围。
+    此时不再裁出长方形再强行 resize（会导致画面被拉伸/压缩），而是：
+    1) 将边长限制为不超过原图较短边，保证正方形一定能放进图内；
+    2) 平移裁剪窗口使其完整落在图像内。
+    这样始终裁出真正的 1:1，不变形、无黑边；代价是边缘场景下实际倍率会
+    略小于设定的 expand（取图像能容纳的最大正方形）。
     """
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
-    side = max(w, h)
-    side = math.ceil(side * expand)
+    img_w, img_h = img.size
+
+    side = math.ceil(max(w, h) * expand)
+    side = max(1, min(side, img_w, img_h))
 
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
     offset_y = int((expand - 1.0) * h * 0.1)
     cy -= offset_y
 
     half = side // 2
-    img_w, img_h = img.size
-    left = max(cx - half, 0)
-    top = max(cy - half, 0)
-    right = min(cx + half, img_w)
-    bottom = min(cy + half, img_h)
+    left = cx - half
+    top = cy - half
+    # 平移窗口，使其完整落在图像内（side<=两边，必定可行）
+    left = min(max(left, 0), img_w - side)
+    top = min(max(top, 0), img_h - side)
 
-    cropped = img.crop((left, top, right, bottom))
-    if cropped.width != cropped.height:
-        target = max(cropped.width, cropped.height)
-        cropped = cropped.resize((target, target), Image.LANCZOS)
-    return cropped
+    return img.crop((left, top, left + side, top + side))
 
 
 def _run_detect(model, img_arr: np.ndarray, conf: float):
