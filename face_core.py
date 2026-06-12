@@ -160,6 +160,30 @@ def detect_box(img: Image.Image, conf: float, mode: str):
     return detection
 
 
+def detect_box_adaptive(
+    img: Image.Image,
+    mode: str,
+    start: float = 0.8,
+    floor: float = 0.2,
+    step: float = 0.1,
+):
+    """自适应阈值检测。
+
+    从 start 阈值开始检测，未命中则按 step 逐步降低，直到 floor。
+    一旦命中立即返回 ((x1,y1,x2,y2), conf)，全程未命中返回 None。
+    """
+    conf = start
+    while conf >= floor - 1e-9:
+        c = round(conf, 4)
+        detection = detect_box(img, c, mode)
+        if detection is not None:
+            log.info("自适应检测命中: 阈值=%.2f, conf=%.4f", c, detection[1])
+            return detection
+        log.info("自适应检测未命中: 阈值=%.2f，继续降低", c)
+        conf -= step
+    return None
+
+
 def detect_and_crop_pil(
     img: Image.Image,
     *,
@@ -176,6 +200,32 @@ def detect_and_crop_pil(
 
     box, best_conf = detection
     log.info("检测到人脸: conf=%.4f, box=%s", best_conf, box)
+    cropped = crop_square(img, tuple(box), expand=expand)
+    if size and size > 0:
+        cropped = cropped.resize((size, size), Image.LANCZOS)
+    return cropped, box, best_conf
+
+
+def detect_and_crop_pil_adaptive(
+    img: Image.Image,
+    *,
+    expand: float = 2.0,
+    mode: str = "auto",
+    size: int | None = None,
+    start: float = 0.8,
+    floor: float = 0.2,
+    step: float = 0.1,
+):
+    """自适应阈值检测 + 1:1 裁剪。返回 (cropped|None, box|None, conf)。
+
+    从 start 阈值开始，未检出则逐步降到 floor；全程未检出返回 (None, None, 0.0)。
+    """
+    img = img.convert("RGB")
+    detection = detect_box_adaptive(img, mode, start=start, floor=floor, step=step)
+    if detection is None:
+        return None, None, 0.0
+
+    box, best_conf = detection
     cropped = crop_square(img, tuple(box), expand=expand)
     if size and size > 0:
         cropped = cropped.resize((size, size), Image.LANCZOS)

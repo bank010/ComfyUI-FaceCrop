@@ -14,11 +14,23 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .face_core import crop_square, detect_and_crop_pil, detect_box
+from .face_core import (
+    crop_square,
+    detect_and_crop_pil,
+    detect_and_crop_pil_adaptive,
+    detect_box,
+)
 
 log = logging.getLogger("ComfyUI-FaceCrop")
 
 MODES = ["auto", "real", "anime"]
+
+# 检测置信度阈值（固定，不在节点上暴露为可调参数）
+# 检测从 DEFAULT_CONFIDENCE 开始，未命中按 CONFIDENCE_STEP 逐步降低，
+# 直到 MIN_CONFIDENCE；仍未命中则报错。
+DEFAULT_CONFIDENCE = 0.8
+MIN_CONFIDENCE = 0.2
+CONFIDENCE_STEP = 0.1
 
 
 # ------------------------- 张量 <-> PIL 转换 -------------------------
@@ -60,10 +72,6 @@ class FaceDetectCrop:
             "required": {
                 "image": ("IMAGE",),
                 "mode": (MODES, {"default": "auto"}),
-                "confidence": (
-                    "FLOAT",
-                    {"default": 0.4, "min": 0.1, "max": 1.0, "step": 0.05},
-                ),
                 "expand": (
                     "FLOAT",
                     {"default": 2.0, "min": 1.0, "max": 5.0, "step": 0.1},
@@ -72,7 +80,6 @@ class FaceDetectCrop:
                     "INT",
                     {"default": 0, "min": 0, "max": 4096, "step": 8},
                 ),
-                "fallback_original": ("BOOLEAN", {"default": True}),
             }
         }
 
@@ -81,37 +88,36 @@ class FaceDetectCrop:
     FUNCTION = "run"
     CATEGORY = "FaceCrop"
 
-    def run(self, image, mode, confidence, expand, output_size, fallback_original):
+    def run(self, image, mode, expand, output_size):
         size = output_size if output_size > 0 else None
         cropped_list: list[Image.Image] = []
         mask_list: list[torch.Tensor] = []
         confs: list[float] = []
-        any_detected = False
 
         for i in range(image.shape[0]):
             pil = tensor_to_pil(image[i])
-            cropped, box, conf = detect_and_crop_pil(
-                pil, conf=confidence, expand=expand, mode=mode, size=size
+            # 从 DEFAULT_CONFIDENCE 开始，未命中自动降低阈值重试，直到 MIN_CONFIDENCE
+            cropped, box, conf = detect_and_crop_pil_adaptive(
+                pil,
+                expand=expand,
+                mode=mode,
+                size=size,
+                start=DEFAULT_CONFIDENCE,
+                floor=MIN_CONFIDENCE,
+                step=CONFIDENCE_STEP,
             )
 
-            mask = torch.zeros(
-                (pil.height, pil.width), dtype=torch.float32
-            )
             if cropped is None:
-                # 未检测到：根据开关决定回退原图还是黑图
-                if fallback_original:
-                    cropped = pil if size is None else pil.resize(
-                        (size, size), Image.LANCZOS
-                    )
-                else:
-                    side = size or min(pil.size)
-                    cropped = Image.new("RGB", (side, side), (0, 0, 0))
-                confs.append(0.0)
-            else:
-                any_detected = True
-                x1, y1, x2, y2 = box
-                mask[y1:y2, x1:x2] = 1.0
-                confs.append(conf)
+                # 降到 MIN_CONFIDENCE 仍未检出：直接报错，不返回黑图/原图
+                raise RuntimeError(
+                    f"未检测到人脸：阈值已从 {DEFAULT_CONFIDENCE} 逐步降到 "
+                    f"{MIN_CONFIDENCE} 仍无结果（batch 第 {i} 张图，mode={mode}）。"
+                )
+
+            mask = torch.zeros((pil.height, pil.width), dtype=torch.float32)
+            x1, y1, x2, y2 = box
+            mask[y1:y2, x1:x2] = 1.0
+            confs.append(conf)
 
             cropped_list.append(cropped)
             mask_list.append(mask)
@@ -131,7 +137,8 @@ class FaceDetectCrop:
         out_mask = torch.stack(padded, dim=0)
 
         avg_conf = float(np.mean(confs)) if confs else 0.0
-        return (out_image, out_mask, avg_conf, any_detected)
+        # 走到这里说明每张图都已成功检出（否则上面已报错）
+        return (out_image, out_mask, avg_conf, True)
 
 
 # ------------------------------ 节点 2 ------------------------------
@@ -145,10 +152,6 @@ class FaceDetectCropFromURL:
             "required": {
                 "url": ("STRING", {"default": "", "multiline": False}),
                 "mode": (MODES, {"default": "auto"}),
-                "confidence": (
-                    "FLOAT",
-                    {"default": 0.4, "min": 0.1, "max": 1.0, "step": 0.05},
-                ),
                 "expand": (
                     "FLOAT",
                     {"default": 2.0, "min": 1.0, "max": 5.0, "step": 0.1},
@@ -189,7 +192,7 @@ class FaceDetectCropFromURL:
             resp.raise_for_status()
         return Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-    def run(self, url, mode, confidence, expand, output_size, proxy_url=""):
+    def run(self, url, mode, expand, output_size, proxy_url=""):
         size = output_size if output_size > 0 else None
         try:
             pil = self._download(url, proxy_url)
@@ -198,7 +201,7 @@ class FaceDetectCropFromURL:
             return (torch.zeros((1, 64, 64, 3), dtype=torch.float32), 0.0, False)
 
         cropped, _box, conf = detect_and_crop_pil(
-            pil, conf=confidence, expand=expand, mode=mode, size=size
+            pil, conf=DEFAULT_CONFIDENCE, expand=expand, mode=mode, size=size
         )
         if cropped is None:
             log.info("未检测到人脸: %s", url)
@@ -219,10 +222,6 @@ class FaceDetectBoxMask:
             "required": {
                 "image": ("IMAGE",),
                 "mode": (MODES, {"default": "auto"}),
-                "confidence": (
-                    "FLOAT",
-                    {"default": 0.4, "min": 0.1, "max": 1.0, "step": 0.05},
-                ),
                 "expand": (
                     "FLOAT",
                     {"default": 1.0, "min": 1.0, "max": 5.0, "step": 0.1},
@@ -235,7 +234,7 @@ class FaceDetectBoxMask:
     FUNCTION = "run"
     CATEGORY = "FaceCrop"
 
-    def run(self, image, mode, confidence, expand):
+    def run(self, image, mode, expand):
         mask_list: list[torch.Tensor] = []
         confs: list[float] = []
         any_detected = False
@@ -243,7 +242,7 @@ class FaceDetectBoxMask:
         for i in range(image.shape[0]):
             pil = tensor_to_pil(image[i])
             mask = torch.zeros((pil.height, pil.width), dtype=torch.float32)
-            detection = detect_box(pil, confidence, mode)
+            detection = detect_box(pil, DEFAULT_CONFIDENCE, mode)
             if detection is not None:
                 any_detected = True
                 (x1, y1, x2, y2), conf = detection
