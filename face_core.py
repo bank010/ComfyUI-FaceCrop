@@ -129,12 +129,20 @@ def crop_square(
 
 
 def _run_detect(model, img_arr: np.ndarray, conf: float):
-    """运行单个模型检测，返回 (best_box_xyxy, best_conf) 或 None。"""
+    """运行单个模型检测，返回 (best_box_xyxy, best_conf) 或 None。
+
+    多张人脸时取**面积最大**的那张（画面占比最大的主角），而非置信度最高的，
+    避免多人物场景下选到背景里的小脸或配角。
+    """
     results = model.predict(source=img_arr, conf=conf, verbose=False)
     boxes = results[0].boxes
     if boxes is None or len(boxes) == 0:
         return None
-    best_idx = int(boxes.conf.argmax())
+    xyxy_all = boxes.xyxy
+    widths = xyxy_all[:, 2] - xyxy_all[:, 0]
+    heights = xyxy_all[:, 3] - xyxy_all[:, 1]
+    areas = widths * heights
+    best_idx = int(areas.argmax())
     xyxy = boxes.xyxy[best_idx].int().tolist()
     best_conf = float(boxes.conf[best_idx])
     return xyxy, best_conf
