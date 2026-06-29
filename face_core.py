@@ -8,6 +8,8 @@
 
 不依赖 FastAPI / app.settings，可在纯 ComfyUI 环境运行。
 """
+from __future__ import annotations
+
 import logging
 import math
 from pathlib import Path
@@ -16,6 +18,7 @@ import numpy as np
 from PIL import Image
 
 log = logging.getLogger("ComfyUI-FaceCrop")
+logger = logging.getLogger()
 
 PLUGIN_DIR = Path(__file__).parent
 REAL_MODEL_FILENAME = "yolov8n-face.onnx"
@@ -72,7 +75,9 @@ def get_real_model():
             raise FileNotFoundError(
                 f"未找到真人模型 {REAL_MODEL_FILENAME}，请放入: {get_model_dir()}"
             )
+        logger.info("正在加载真人模型（首次较慢）: %s", model_path)
         _real_model = YOLO(str(model_path), task="detect")
+        logger.info("真人模型加载完成: %s", model_path)
     return _real_model
 
 
@@ -84,7 +89,9 @@ def get_anime_model():
         model_path = _find_model(ANIME_MODEL_FILENAME)
         if model_path is None:
             model_path = _download_anime_model()
+        logger.info("正在加载动漫模型（首次较慢）: %s", model_path)
         _anime_model = YOLO(str(model_path), task="detect")
+        logger.info("动漫模型加载完成: %s", model_path)
     return _anime_model
 
 
@@ -145,6 +152,10 @@ def _run_detect(model, img_arr: np.ndarray, conf: float):
     best_idx = int(areas.argmax())
     xyxy = boxes.xyxy[best_idx].int().tolist()
     best_conf = float(boxes.conf[best_idx])
+    logger.info(
+        "检测到 %d 张人脸（阈值=%.2f），选中面积最大的: box=%s area=%.0f conf=%.3f",
+        len(boxes), conf, xyxy, float(areas[best_idx]), best_conf,
+    )
     return xyxy, best_conf
 
 
