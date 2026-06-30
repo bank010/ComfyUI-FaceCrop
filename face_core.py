@@ -25,9 +25,6 @@ REAL_MODEL_FILENAME = "yolov8n-face.onnx"
 ANIME_MODEL_FILENAME = "yolov8x6_animeface.pt"
 ANIME_HF_REPO = "Fuyucchi/yolov8_animeface"
 
-_real_model = None
-_anime_model = None
-
 
 def get_model_dir() -> Path:
     """固定模型目录：ComfyUI/models/facecrop/
@@ -66,33 +63,35 @@ def _download_anime_model() -> Path:
 
 
 def get_real_model():
+    """每次都重新加载真人模型（不缓存）。
+
+    避免长期持有模型引用：ComfyUI 在显存吃紧时可能清理缓存，导致缓存的
+    模型引用失效；每次新建可保证行为稳定可预期。
+    """
     from ultralytics import YOLO
 
-    global _real_model
-    if _real_model is None:
-        model_path = _find_model(REAL_MODEL_FILENAME)
-        if model_path is None:
-            raise FileNotFoundError(
-                f"未找到真人模型 {REAL_MODEL_FILENAME}，请放入: {get_model_dir()}"
-            )
-        logger.info("正在加载真人模型（首次较慢）: %s", model_path)
-        _real_model = YOLO(str(model_path), task="detect")
-        logger.info("真人模型加载完成: %s", model_path)
-    return _real_model
+    model_path = _find_model(REAL_MODEL_FILENAME)
+    if model_path is None:
+        raise FileNotFoundError(
+            f"未找到真人模型 {REAL_MODEL_FILENAME}，请放入: {get_model_dir()}"
+        )
+    logger.info("正在加载真人模型: %s", model_path)
+    model = YOLO(str(model_path), task="detect")
+    logger.info("真人模型加载完成: %s", model_path)
+    return model
 
 
 def get_anime_model():
+    """每次都重新加载动漫模型（不缓存）。"""
     from ultralytics import YOLO
 
-    global _anime_model
-    if _anime_model is None:
-        model_path = _find_model(ANIME_MODEL_FILENAME)
-        if model_path is None:
-            model_path = _download_anime_model()
-        logger.info("正在加载动漫模型（首次较慢）: %s", model_path)
-        _anime_model = YOLO(str(model_path), task="detect")
-        logger.info("动漫模型加载完成: %s", model_path)
-    return _anime_model
+    model_path = _find_model(ANIME_MODEL_FILENAME)
+    if model_path is None:
+        model_path = _download_anime_model()
+    logger.info("正在加载动漫模型: %s", model_path)
+    model = YOLO(str(model_path), task="detect")
+    logger.info("动漫模型加载完成: %s", model_path)
+    return model
 
 
 def crop_square(
@@ -179,6 +178,20 @@ def detect_box(img: Image.Image, conf: float, mode: str):
     return detection
 
 
+def _adaptive_on_model(model, img_arr: np.ndarray, start, floor, step):
+    """在**同一个已加载模型**上做自适应降阈值检测，避免重复加载模型。"""
+    conf = start
+    while conf >= floor - 1e-9:
+        c = round(conf, 4)
+        detection = _run_detect(model, img_arr, c)
+        if detection is not None:
+            log.info("自适应检测命中: 阈值=%.2f, conf=%.4f", c, detection[1])
+            return detection
+        log.info("自适应检测未命中: 阈值=%.2f，继续降低", c)
+        conf -= step
+    return None
+
+
 def detect_box_adaptive(
     img: Image.Image,
     mode: str,
@@ -190,16 +203,32 @@ def detect_box_adaptive(
 
     从 start 阈值开始检测，未命中则按 step 逐步降低，直到 floor。
     一旦命中立即返回 ((x1,y1,x2,y2), conf)，全程未命中返回 None。
+
+    模型每次加载一次（不缓存），并在该模型上跑完所有阈值档位后再决定是否
+    切换到下一个模型，避免在阈值循环里反复加载模型。
     """
-    conf = start
-    while conf >= floor - 1e-9:
-        c = round(conf, 4)
-        detection = detect_box(img, c, mode)
-        if detection is not None:
-            log.info("自适应检测命中: 阈值=%.2f, conf=%.4f", c, detection[1])
-            return detection
-        log.info("自适应检测未命中: 阈值=%.2f，继续降低", c)
-        conf -= step
+    img_arr = np.array(img.convert("RGB"))
+
+    if mode in ("real", "auto"):
+        try:
+            detection = _adaptive_on_model(
+                get_real_model(), img_arr, start, floor, step
+            )
+            if detection is not None:
+                return detection
+        except FileNotFoundError as e:
+            log.warning("真人模型加载失败: %s", e)
+
+    if mode in ("anime", "auto"):
+        try:
+            detection = _adaptive_on_model(
+                get_anime_model(), img_arr, start, floor, step
+            )
+            if detection is not None:
+                return detection
+        except FileNotFoundError as e:
+            log.warning("动漫模型加载失败: %s", e)
+
     return None
 
 
